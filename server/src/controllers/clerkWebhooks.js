@@ -1,53 +1,51 @@
-const { json } = require("express");
+const { Webhook } = require("svix");
 const userModel = require("../models/userModel");
-const { Webhook } = require ("svix");
-const { Message } = require("svix/dist/api/message");
+require("dotenv").config();
 
-const clerkWebhooks = async (req,res)=>{
-  try{
-    //Create a svix instance with clerk webhook secret.
-    const whook = new Webhook (process.env.CLERK_WEBHOOK_SECRET)
+const clerkWebhooks = async (req, res) => {
+  const wh = new Webhook(process.env.CLERK_WEBHOOK_SECRET);
+  let evt;
 
-    // Getting Headers 
-    const headers ={
-      "svix-id": req.headers["svix-id"],
-      "svix-timestamp": req.headers["svix-timestamp"],
-      "svix-signature": req.headers["svix-signature"],
-    };
-    //verifying headers.
-    await whook.verify(JSON.stringify(req.body),headers)
+  try {
+    evt = wh.verify(req.body, req.headers);
+  } catch (err) {
+    console.error("❌ Webhook Error:", err.message);
+    return res.status(400).json({ success: false, message: "Invalid signature" });
+  }
 
-    // Getting Data from request body
-    const {date,type} = req.body
-    const userData = {
-      _id:data.id,
-      email: data.email_addresses[0].email_address,
-      username: data.first_name + " " + data.last_name,
-      image:date.image_url,
+  console.log("🔔 Clerk Event:", evt.type);
 
-    };
-    //switch cases for differernt events.
-    switch(type){
-      case "user.created":{
-        await userModel.create(userData);
-        break;
-      }
-      case "user.updated":{
-        await userModel.findByIdAndUpdate(data.id,userData);
-        break;
-      }
-      case "user.deleted":{
-        await userModel.findByIdAndDelete(data.id);
-        break;
-      }
-      default:
-        break;
+  if (evt.type === "user.created") {
+    const user = evt.data;
+
+    // Email safe extraction / fallback
+    let email = user?.email_addresses?.[0]?.email_address || `${user.id}@dummy.com`;
+    if (!user?.email_addresses?.[0]?.email_address) {
+      console.warn("⚠ Email missing. Using dummy email:", email);
     }
-    res.json({success: true, mimeessage:"Webhook Recieved"})
+
+    try {
+      // Duplicate check
+      const existingUser = await userModel.findById(user.id);
+      if (!existingUser) {
+        await userModel.create({
+          _id: user.id,
+          username: `${user.first_name || ""} ${user.last_name || ""}`.trim(),
+          email,
+          image: user.image_url,
+          role: "user",
+          recentSearchedCities: [],
+        });
+        console.log("✅ User Saved:", email);
+      } else {
+        console.log("ℹ User already exists:", email);
+      }
+    } catch (err) {
+      console.error("❌ DB Error:", err.message);
+    }
   }
-  catch (error){
-    console.log(error.message);
-    res.JSON({success:false,message: error.message});
-  }
-}
+
+  res.status(200).json({ success: true });
+};
+
 module.exports = clerkWebhooks;
